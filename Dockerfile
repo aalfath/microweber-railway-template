@@ -61,6 +61,5 @@ RUN set -eux; \
 # APP_DEBUG must be 0 or empty: upstream reads it with (bool) getenv(), so the string "false" turns debug ON.
 ENV PORT=8080 APP_ENV=production APP_DEBUG=0
 EXPOSE 8080
-VOLUME ["/data"]
 WORKDIR /var/www/html
 CMD ["microweber-start"]
