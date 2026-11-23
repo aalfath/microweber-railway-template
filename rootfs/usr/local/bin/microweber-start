@@ -11,7 +11,7 @@ SEED=/opt/microweber-seed
 IMAGE_VERSION=$(cat "$SEED/VERSION")
 
 export PORT="${PORT:-8080}"
-export APACHE_MAX_WORKERS="${APACHE_MAX_WORKERS:-5}"
+export APACHE_MAX_WORKERS="${APACHE_MAX_WORKERS:-8}"
 export DB_CONNECTION="${DB_CONNECTION:-mysql}"
 export DB_PORT="${DB_PORT:-3306}"
 export LOG_CHANNEL="${LOG_CHANNEL:-stderr}"
