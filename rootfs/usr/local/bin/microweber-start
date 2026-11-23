@@ -96,5 +96,14 @@ exec 9>&-
 chown -R www-data:www-data "$DATA" "$APP/bootstrap/cache"
 
 # 4. Apache in the foreground (exits non-zero if it dies).
+# mod_php needs the prefork MPM only. On Railway an extra MPM can show up enabled
+# ("AH00534: More than one MPM loaded"), so make prefork the only one at every start.
+for m in /etc/apache2/mods-enabled/mpm_*.load /etc/apache2/mods-enabled/mpm_*.conf; do
+  case "$m" in */mpm_prefork.*) ;; *) [ -e "$m" ] || [ -L "$m" ] && rm "$m" ;; esac
+done
+for f in mpm_prefork.load mpm_prefork.conf; do
+  [ -e "/etc/apache2/mods-enabled/$f" ] || ln -s "../mods-available/$f" "/etc/apache2/mods-enabled/$f"
+done
+apache2ctl -t >/dev/null 2>&1 || { apache2ctl -t; die "Apache configuration test failed"; }
 log "starting Apache on port $PORT with $APACHE_MAX_WORKERS workers"
 exec apache2-foreground

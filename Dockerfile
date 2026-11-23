@@ -52,7 +52,7 @@ COPY --from=build --chown=www-data:www-data /seed /opt/microweber-seed
 COPY rootfs/ /
 RUN set -eux; \
     cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"; \
-    a2enmod rewrite headers expires; \
+    a2dismod -f mpm_event mpm_worker >/dev/null 2>&1 || true; a2enmod mpm_prefork rewrite headers expires; \
     a2enconf microweber; \
     sed -ri 's/^Listen 80$/Listen ${PORT}/' /etc/apache2/ports.conf; \
     sed -ri 's/<VirtualHost \*:80>/<VirtualHost *:${PORT}>/' /etc/apache2/sites-available/000-default.conf; \
