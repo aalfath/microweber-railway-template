@@ -1,0 +1,95 @@
+#!/bin/sh
+# Start script for Microweber on Railway.
+# 1. Prepares the /data volume, 2. waits for MySQL, 3. installs Microweber once (admin user from
+# ADMIN_USERNAME / ADMIN_PASSWORD), or runs the post-update step after an image upgrade,
+# 4. starts Apache in the foreground. Any failure exits non-zero so Railway restarts the service.
+set -eu
+
+APP=/var/www/html
+DATA=/data
+SEED=/opt/microweber-seed
+IMAGE_VERSION=$(cat "$SEED/VERSION")
+
+export PORT="${PORT:-8080}"
+export APACHE_MAX_WORKERS="${APACHE_MAX_WORKERS:-5}"
+export DB_CONNECTION="${DB_CONNECTION:-mysql}"
+export DB_PORT="${DB_PORT:-3306}"
+export LOG_CHANNEL="${LOG_CHANNEL:-stderr}"
+export LOG_LEVEL="${LOG_LEVEL:-warning}"
+export APP_ENV="${APP_ENV:-production}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
+
+log() { echo "[microweber-start] $*"; }
+die() { echo "[microweber-start] ERROR: $*" >&2; exit 1; }
+as_www() { setpriv --reuid=www-data --regid=www-data --init-groups -- "$@"; }
+
+[ -n "${DB_HOST:-}" ] || die "DB_HOST is not set"
+[ -n "${DB_DATABASE:-}" ] || die "DB_DATABASE is not set"
+[ -n "${DB_USERNAME:-}" ] || die "DB_USERNAME is not set"
+[ -n "${APP_KEY:-}" ] || die "APP_KEY is not set"
+
+# 1. Volume layout (first boot copies the seed; later boots only add what's missing).
+mkdir -p "$DATA/config" "$DATA/storage" "$DATA/userfiles"
+cp -a --update=none "$SEED/storage/." "$DATA/storage/"
+cp -a --update=none "$SEED/userfiles/." "$DATA/userfiles/"
+mkdir -p "$DATA/storage/framework/sessions" "$DATA/storage/framework/cache" "$DATA/storage/framework/views" \
+         "$DATA/storage/logs" "$DATA/storage/app" "$DATA/storage/cache"
+# Settings file the installer writes (config/microweber.php links here); must exist before PHP boots.
+[ -f "$DATA/config/microweber.php" ] || printf '%s\n' '<?php return array();' > "$DATA/config/microweber.php"
+chown -R www-data:www-data "$DATA"
+
+# 2. Wait for MySQL (up to 3 minutes).
+log "waiting for MySQL at $DB_HOST:$DB_PORT"
+i=0
+until php -r '
+  try { new PDO("mysql:host=".getenv("DB_HOST").";port=".getenv("DB_PORT").";dbname=".getenv("DB_DATABASE"),
+                getenv("DB_USERNAME"), getenv("DB_PASSWORD") ?: "", [PDO::ATTR_TIMEOUT => 3]); exit(0); }
+  catch (Throwable $e) { exit(1); }' 2>/dev/null; do
+  i=$((i + 1)); [ "$i" -lt 60 ] || die "MySQL did not answer in 3 minutes"
+  sleep 3
+done
+log "MySQL is up"
+
+installed() {
+  php -r '$c = @include "/data/config/microweber.php"; exit(is_array($c) && !empty($c["is_installed"]) ? 0 : 1);'
+}
+
+# 3. Install once, under a lock so two overlapping deploys can't both install.
+exec 9>"$DATA/.install.lock"
+flock -w 900 9 || die "could not get the install lock"
+if ! installed; then
+  [ -n "${ADMIN_PASSWORD:-}" ] || die "ADMIN_PASSWORD is not set"
+  tables=$(php -r '
+    $p = new PDO("mysql:host=".getenv("DB_HOST").";port=".getenv("DB_PORT").";dbname=".getenv("DB_DATABASE"), getenv("DB_USERNAME"), getenv("DB_PASSWORD") ?: "");
+    echo $p->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()")->fetchColumn();')
+  if [ "$tables" != "0" ]; then
+    die "the database already has $tables tables but /data/config/microweber.php is missing. Restore the volume, or empty the database to install again"
+  fi
+  log "installing Microweber $IMAGE_VERSION (admin user: $ADMIN_USERNAME); this takes a minute or two"
+  cd "$APP"
+  as_www php -d memory_limit=384M artisan microweber:install \
+      --db-driver=mysql --db-host="$DB_HOST" --db-name="$DB_DATABASE" \
+      --db-username="$DB_USERNAME" --db-password="${DB_PASSWORD:-}" \
+      --username="$ADMIN_USERNAME" --password="$ADMIN_PASSWORD" \
+      --template=default --default-content=1 --language=en_US \
+      > /tmp/microweber-install.log 2>&1 || { tail -n 40 /tmp/microweber-install.log >&2; die "install failed"; }
+  tail -n 3 /tmp/microweber-install.log
+  installed || { tail -n 40 /tmp/microweber-install.log >&2; die "install finished but is_installed is not set"; }
+  # Railway's edge proxy forwards https; trust it so generated links use https.
+  as_www php artisan microweber:option --option_key=trust_proxies --option_value="0.0.0.0/0" --option_group=website >/dev/null \
+    || log "warning: could not set trust_proxies (set it under Settings > Advanced if links show http://)"
+  echo "$IMAGE_VERSION" > "$DATA/.version"
+  log "install finished"
+elif [ "$(cat "$DATA/.version" 2>/dev/null || true)" != "$IMAGE_VERSION" ]; then
+  log "image is $IMAGE_VERSION, data was $(cat "$DATA/.version" 2>/dev/null || echo unknown): running database updates"
+  cd "$APP"
+  as_www php -d memory_limit=384M artisan microweber:reload-database > /tmp/microweber-update.log 2>&1 || { tail -n 40 /tmp/microweber-update.log >&2; die "database update failed"; }
+  echo "$IMAGE_VERSION" > "$DATA/.version"
+fi
+flock -u 9
+exec 9>&-
+chown -R www-data:www-data "$DATA" "$APP/bootstrap/cache"
+
+# 4. Apache in the foreground (exits non-zero if it dies).
+log "starting Apache on port $PORT with $APACHE_MAX_WORKERS workers"
+exec apache2-foreground
