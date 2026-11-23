@@ -27,6 +27,11 @@ as_www() { setpriv --reuid=www-data --regid=www-data --init-groups -- "$@"; }
 [ -n "${DB_DATABASE:-}" ] || die "DB_DATABASE is not set"
 [ -n "${DB_USERNAME:-}" ] || die "DB_USERNAME is not set"
 [ -n "${APP_KEY:-}" ] || die "APP_KEY is not set"
+# Upstream reads APP_DEBUG with (bool) getenv(): any non-empty value except "0" turns debug on.
+case "${APP_DEBUG:-0}" in 0|"") export APP_DEBUG=0 ;; false|False|FALSE|no|off) export APP_DEBUG=0 ;; esac
+# AES-256-CBC needs a 32-byte key: 32 plain characters, or base64: plus 32 encoded bytes.
+php -r '$k = getenv("APP_KEY"); if (str_starts_with($k, "base64:")) $k = base64_decode(substr($k, 7), true); exit(is_string($k) && strlen($k) === 32 ? 0 : 1);' \
+  || die "APP_KEY must be 32 characters long (or base64: followed by 32 base64-encoded bytes)"
 
 # 1. Volume layout (first boot copies the seed; later boots only add what's missing).
 mkdir -p "$DATA/config" "$DATA/storage" "$DATA/userfiles"

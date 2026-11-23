@@ -58,7 +58,8 @@ RUN set -eux; \
     sed -ri 's/<VirtualHost \*:80>/<VirtualHost *:${PORT}>/' /etc/apache2/sites-available/000-default.conf; \
     chmod 755 /usr/local/bin/microweber-start; \
     chown www-data:www-data /var/www/html
-ENV PORT=8080 APP_ENV=production APP_DEBUG=false
+# APP_DEBUG must be 0 or empty: upstream reads it with (bool) getenv(), so the string "false" turns debug ON.
+ENV PORT=8080 APP_ENV=production APP_DEBUG=0
 EXPOSE 8080
 VOLUME ["/data"]
 WORKDIR /var/www/html
